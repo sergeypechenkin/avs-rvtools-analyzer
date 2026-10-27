@@ -7,7 +7,11 @@ import os
 from typing import Any, Dict, List, Optional
 import importlib.resources as resources
 
-from openai import AzureOpenAI
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+from azure.core.exceptions import ClientAuthenticationError
+from openai import APIError, OpenAI
+
+from ..core.exceptions import AnalysisError
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +20,7 @@ class AzureOpenAIService:
     """Service for handling Azure OpenAI API calls for risk analysis suggestions."""
 
     def __init__(self):
-        self.client: Optional[AzureOpenAI] = None
+        self.client: Optional[OpenAI] = None
         self.is_configured = False
         self.deployment_name = None
         self.max_tokens = self._get_max_tokens_config()
@@ -25,21 +29,33 @@ class AzureOpenAIService:
         self._configure_from_env()
 
     def _configure_from_env(self) -> None:
-        """Configure Azure OpenAI using environment variables only."""
+        """Configure Azure OpenAI with keyless Microsoft Entra ID authentication."""
         azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-        api_key = os.getenv("AZURE_OPENAI_API_KEY")
         deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
 
-        if azure_endpoint and api_key and deployment_name:
+        if azure_endpoint and deployment_name:
             try:
-                self.client = AzureOpenAI(
-                    azure_endpoint=azure_endpoint,
-                    api_key=api_key,
-                    api_version="2024-02-01",
+                token_provider = get_bearer_token_provider(
+                    DefaultAzureCredential(),
+                    "https://cognitiveservices.azure.com/.default",
+                )
+                endpoint = azure_endpoint.rstrip("/")
+                base_url = (
+                    f"{endpoint}/"
+                    if endpoint.endswith("/openai/v1")
+                    else f"{endpoint}/openai/v1/"
+                )
+                self.client = OpenAI(
+                    base_url=base_url,
+                    api_key=token_provider,
+                    timeout=60,
+                    max_retries=2,
                 )
                 self.deployment_name = deployment_name
                 self.is_configured = True
-                logger.info("Azure OpenAI client configured via environment variables")
+                logger.info(
+                    "Azure OpenAI client configured with DefaultAzureCredential"
+                )
             except Exception as e:
                 logger.error(
                     f"Failed to configure Azure OpenAI client via environment variables: {e}"
@@ -57,7 +73,7 @@ class AzureOpenAIService:
             int: Max tokens value (default 2000 for better completeness)
         """
         try:
-            env_value = os.getenv("AZURE_OPENAI_MAX_TOKENS", "500")
+            env_value = os.getenv("AZURE_OPENAI_MAX_TOKENS", "2000")
             max_tokens = int(env_value)
 
             logger.info("Using max_tokens configuration: %s", max_tokens)
@@ -95,7 +111,7 @@ class AzureOpenAIService:
             dict: AI-generated suggestion with token usage or None if failed
                   Format: {"suggestion": str, "tokens_used": int}
         """
-        if not self.is_configured or not self.client:
+        if not self.is_configured or not self.client or not self.deployment_name:
             logger.warning(
                 "Azure OpenAI client not configured via environment variables"
             )
@@ -119,11 +135,17 @@ class AzureOpenAIService:
                     },
                     {"role": "user", "content": prompt},
                 ],
-                max_tokens=self.max_tokens,
-                temperature=0.3,
+                max_completion_tokens=self.max_tokens,
             )
 
             suggestion = response.choices[0].message.content
+            if not suggestion or not suggestion.strip():
+                raise AnalysisError(
+                    "The model returned no suggestion "
+                    f"(finish reason: {response.choices[0].finish_reason}). "
+                    "If the token limit was reached, increase AZURE_OPENAI_MAX_TOKENS.",
+                    analysis_type="ai_suggestion",
+                )
             tokens_used = response.usage.total_tokens if response.usage else 0
             output_tokens = response.usage.completion_tokens if response.usage else 0
             input_tokens = response.usage.prompt_tokens if response.usage else 0
@@ -143,6 +165,15 @@ class AzureOpenAIService:
                 "carbon_footprint": carbon_footprint,
             }
 
+        except (APIError, ClientAuthenticationError) as e:
+            logger.error("Failed to get AI suggestion for %s: %s", risk_name, e)
+            raise AnalysisError(
+                f"Azure OpenAI request failed: {e}",
+                analysis_type="ai_suggestion",
+            ) from e
+        except AnalysisError:
+            logger.error("The model returned no suggestion for %s", risk_name)
+            raise
         except Exception as e:
             logger.error("Failed to get AI suggestion for %s: %s", risk_name, e)
             return None
@@ -301,7 +332,7 @@ class AzureOpenAIService:
         Returns:
             dict: Test result with success status and message
         """
-        if not self.is_configured or not self.client:
+        if not self.is_configured or not self.client or not self.deployment_name:
             return {
                 "success": False,
                 "message": "Azure OpenAI not configured via environment variables",
@@ -317,14 +348,20 @@ class AzureOpenAIService:
                         "content": "Hello, this is a connection test. Please respond with 'Connection successful'.",
                     }
                 ],
-                max_tokens=10,
-                temperature=0,
+                max_completion_tokens=self.max_tokens,
             )
+
+            content = response.choices[0].message.content
+            if not content or not content.strip():
+                raise ValueError(
+                    "The model returned no text. Increase AZURE_OPENAI_MAX_TOKENS "
+                    "if the completion token limit was reached."
+                )
 
             return {
                 "success": True,
                 "message": "Connection test successful (using environment variables)",
-                "response": response.choices[0].message.content,
+                "response": content,
             }
 
         except Exception as e:

@@ -104,7 +104,7 @@ def create_app(config: AppConfig = None, debug: bool = False) -> FastAPI:
         title=config.fastapi.title,
         version=calver_version,
         description=config.fastapi.description,
-        tags_metadata=config.fastapi.tags_metadata,
+        openapi_tags=config.fastapi.tags_metadata,
         lifespan=mcp_app.lifespan,
     )
 

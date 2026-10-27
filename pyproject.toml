@@ -20,6 +20,7 @@ dependencies = [
     "python-multipart",
     "fastmcp",
     "openai",
+    "azure-identity>=1.24.0",
     "python-dotenv"
 ]
 

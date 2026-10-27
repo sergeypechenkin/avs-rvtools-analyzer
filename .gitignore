@@ -37,6 +37,7 @@ venv.bak/
 uv.lock
 
 # Testing
+.playwright-mcp/
 .pytest_cache/
 .coverage
 htmlcov/

@@ -141,18 +141,25 @@ To use Azure OpenAI integration, you need:
 
 1. **Azure OpenAI Resource**: Create an Azure OpenAI resource in your Azure subscription
 2. **Model Deployment**: Deploy a compatible model (e.g., GPT-4, GPT-3.5-turbo) in your Azure OpenAI resource
-3. **API Access**: Obtain your endpoint URL and API key from the Azure portal
+3. **Microsoft Entra ID Access**: Grant your user or the application's managed identity the **Cognitive Services OpenAI User** role on the Azure OpenAI resource
 
 For detailed setup instructions, see [docs/azure-openai-integration.md](docs/azure-openai-integration.md).
 
 ### Configuration
 
-Configure Azure OpenAI using environment variables (server-side only):
+Sign in locally with Azure CLI and select your subscription:
 
-```bash
-export AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com/"
-export AZURE_OPENAI_API_KEY="your-api-key"
-export AZURE_OPENAI_DEPLOYMENT_NAME="gpt-4.1"
+```powershell
+az login
+az account set --subscription "<subscription-name-or-id>"
+```
+
+Configure Azure OpenAI using environment variables (server-side only). No API key is required:
+
+```powershell
+$env:AZURE_TOKEN_CREDENTIALS="AzureCliCredential"
+$env:AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com/"
+$env:AZURE_OPENAI_DEPLOYMENT_NAME="gpt-4.1"
 ```
 
 **Using .env file (recommended for development):**
@@ -161,9 +168,21 @@ Create a `.env` file in the project root:
 
 ```env
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_OPENAI_API_KEY=your-api-key
 AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4.1
+AZURE_TOKEN_CREDENTIALS=AzureCliCredential
 ```
+
+The service uses `DefaultAzureCredential` with automatically refreshed Microsoft Entra ID tokens.
+Legacy `AZURE_OPENAI_API_KEY`, `OPENAI_API_KEY`, and `AZURE_OPENAI_AD_TOKEN` settings are ignored;
+the client is explicitly configured with a refreshable token provider.
+Selecting a subscription does not discover or change the endpoint or deployment: configure these for
+the resource you want to use. Restart the application after changing your login or configuration.
+For Azure hosting, enable managed identity and set `AZURE_TOKEN_CREDENTIALS=ManagedIdentityCredential`;
+for a user-assigned identity, also set `AZURE_CLIENT_ID`. See the detailed guide for setup and troubleshooting.
+
+Both Azure OpenAI and Foundry resource endpoints are supported, including
+`https://your-resource.services.ai.azure.com/` or a full `/openai/v1/` base URL.
+Requests use the OpenAI v1 API and `max_completion_tokens` for GPT-5 compatibility.
 
 ### Customizing the AI Prompt
 
